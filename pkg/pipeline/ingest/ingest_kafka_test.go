@@ -89,8 +89,6 @@ func Test_NewIngestKafka1(t *testing.T) {
 	require.Equal(t, expectedBrokers, ingestKafka.kafkaReader.Config().Brokers)
 	require.Equal(t, int64(-2), ingestKafka.kafkaReader.Config().StartOffset)
 	require.Equal(t, 2, len(ingestKafka.kafkaReader.Config().GroupBalancers))
-	require.Equal(t, int64(300), ingestKafka.batchReadTimeout)
-	require.Equal(t, int(500), ingestKafka.batchMaxLength)
 	require.Equal(t, time.Duration(500)*time.Millisecond, ingestKafka.kafkaReader.Config().CommitInterval)
 }
 
@@ -103,8 +101,6 @@ func Test_NewIngestKafka2(t *testing.T) {
 	require.Equal(t, expectedBrokers, ingestKafka.kafkaReader.Config().Brokers)
 	require.Equal(t, int64(-1), ingestKafka.kafkaReader.Config().StartOffset)
 	require.Equal(t, 1, len(ingestKafka.kafkaReader.Config().GroupBalancers))
-	require.Equal(t, defaultBatchReadTimeout, ingestKafka.batchReadTimeout)
-	require.Equal(t, int(1000), ingestKafka.batchMaxLength)
 	require.Equal(t, time.Duration(1000)*time.Millisecond, ingestKafka.kafkaReader.Config().CommitInterval)
 }
 

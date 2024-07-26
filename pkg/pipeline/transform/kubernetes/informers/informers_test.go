@@ -20,84 +20,84 @@ package informers
 import (
 	"testing"
 
+	"github.com/netobserv/flowlogs-pipeline/pkg/pipeline/transform/kubernetes/model"
 	"github.com/stretchr/testify/require"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 func TestGetInfo(t *testing.T) {
 	kubeData := Informers{}
 	pidx, hidx, sidx, ridx := SetupIndexerMocks(&kubeData)
-	pidx.MockPod("1.2.3.4", "pod1", "podNamespace", "10.0.0.1", nil)
-	pidx.MockPod("1.2.3.5", "pod2", "podNamespace", "10.0.0.1", &Owner{Name: "rs1", Type: "ReplicaSet"})
-	pidx.FallbackNotFound()
-	ridx.MockReplicaSet("rs1", "podNamespace", Owner{Name: "dep1", Type: "Deployment"})
+	ridx.MockReplicaSet("rs1", "podNamespace", "dep1", "Deployment")
 	ridx.FallbackNotFound()
+	pidx.MockPod("1.2.3.4", "pod1", "podNamespace", "10.0.0.1", "pod1", "Pod")
+	pidx.MockPod("1.2.3.5", "pod2", "podNamespace", "10.0.0.1", "rs1", "ReplicaSet")
+	pidx.FallbackNotFound()
 	sidx.MockService("1.2.3.100", "svc1", "svcNamespace")
 	sidx.FallbackNotFound()
 	hidx.MockNode("10.0.0.1", "node1")
 	hidx.FallbackNotFound()
 
 	// Test get orphan pod
-	info, err := kubeData.GetInfo("1.2.3.4")
-	require.NoError(t, err)
+	info := kubeData.GetByIP("1.2.3.4")
+	require.NotNil(t, info)
 
-	require.Equal(t, *info, Info{
-		Type: "Pod",
-		ObjectMeta: metav1.ObjectMeta{
+	require.Equal(t, model.ResourceMetaData{
+		ObjectMeta: v1.ObjectMeta{
 			Name:      "pod1",
 			Namespace: "podNamespace",
 		},
-		HostName: "node1",
-		HostIP:   "10.0.0.1",
-		Owner:    Owner{Name: "pod1", Type: "Pod"},
-	})
+		Kind:      "Pod",
+		HostName:  "node1",
+		HostIP:    "10.0.0.1",
+		OwnerName: "pod1",
+		OwnerKind: "Pod",
+	}, *info)
 
 	// Test get pod owned
-	info, err = kubeData.GetInfo("1.2.3.5")
-	require.NoError(t, err)
+	info = kubeData.GetByIP("1.2.3.5")
+	require.NotNil(t, info)
 
-	require.Equal(t, *info, Info{
-		Type: "Pod",
-		ObjectMeta: metav1.ObjectMeta{
+	require.Equal(t, model.ResourceMetaData{
+		ObjectMeta: v1.ObjectMeta{
 			Name:      "pod2",
 			Namespace: "podNamespace",
-			OwnerReferences: []metav1.OwnerReference{{
-				Kind: "ReplicaSet",
-				Name: "rs1",
-			}},
 		},
-		HostName: "node1",
-		HostIP:   "10.0.0.1",
-		Owner:    Owner{Name: "dep1", Type: "Deployment"},
-	})
+		Kind:      "Pod",
+		HostName:  "node1",
+		HostIP:    "10.0.0.1",
+		OwnerName: "dep1",
+		OwnerKind: "Deployment",
+	}, *info)
 
 	// Test get node
-	info, err = kubeData.GetInfo("10.0.0.1")
-	require.NoError(t, err)
+	info = kubeData.GetByIP("10.0.0.1")
+	require.NotNil(t, info)
 
-	require.Equal(t, *info, Info{
-		Type: "Node",
-		ObjectMeta: metav1.ObjectMeta{
+	require.Equal(t, model.ResourceMetaData{
+		ObjectMeta: v1.ObjectMeta{
 			Name: "node1",
 		},
-		Owner: Owner{Name: "node1", Type: "Node"},
-	})
+		Kind:      "Node",
+		OwnerName: "node1",
+		OwnerKind: "Node",
+	}, *info)
 
 	// Test get service
-	info, err = kubeData.GetInfo("1.2.3.100")
-	require.NoError(t, err)
+	info = kubeData.GetByIP("1.2.3.100")
+	require.NotNil(t, info)
 
-	require.Equal(t, *info, Info{
-		Type: "Service",
-		ObjectMeta: metav1.ObjectMeta{
+	require.Equal(t, model.ResourceMetaData{
+		ObjectMeta: v1.ObjectMeta{
 			Name:      "svc1",
 			Namespace: "svcNamespace",
 		},
-		Owner: Owner{Name: "svc1", Type: "Service"},
-	})
+		Kind:      "Service",
+		OwnerName: "svc1",
+		OwnerKind: "Service",
+	}, *info)
 
 	// Test no match
-	info, err = kubeData.GetInfo("1.2.3.200")
-	require.NotNil(t, err)
+	info = kubeData.GetByIP("1.2.3.200")
 	require.Nil(t, info)
 }

@@ -5,20 +5,21 @@ import (
 
 	"github.com/netobserv/flowlogs-pipeline/pkg/api"
 	"github.com/netobserv/flowlogs-pipeline/pkg/config"
+	"github.com/netobserv/flowlogs-pipeline/pkg/pipeline/transform/kubernetes/datasource"
 	inf "github.com/netobserv/flowlogs-pipeline/pkg/pipeline/transform/kubernetes/informers"
+	"github.com/netobserv/flowlogs-pipeline/pkg/pipeline/transform/kubernetes/model"
 	"github.com/stretchr/testify/assert"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
 )
 
-var info = map[string]*inf.Info{
+var info = map[string]*model.ResourceMetaData{
 	"1.2.3.4": nil,
 	"10.0.0.1": {
 		ObjectMeta: v1.ObjectMeta{
 			Name:      "pod-1",
 			Namespace: "ns-1",
 		},
-		Type:     "Pod",
+		Kind:     "Pod",
 		HostName: "host-1",
 		HostIP:   "100.0.0.1",
 	},
@@ -27,7 +28,7 @@ var info = map[string]*inf.Info{
 			Name:      "pod-2",
 			Namespace: "ns-2",
 		},
-		Type:     "Pod",
+		Kind:     "Pod",
 		HostName: "host-2",
 		HostIP:   "100.0.0.2",
 	},
@@ -36,11 +37,11 @@ var info = map[string]*inf.Info{
 			Name:      "service-1",
 			Namespace: "ns-1",
 		},
-		Type: "Service",
+		Kind: "Service",
 	},
 }
 
-var nodes = map[string]*inf.Info{
+var nodes = map[string]*model.ResourceMetaData{
 	"host-1": {
 		ObjectMeta: v1.ObjectMeta{
 			Name: "host-1",
@@ -48,7 +49,7 @@ var nodes = map[string]*inf.Info{
 				nodeZoneLabelName: "us-east-1a",
 			},
 		},
-		Type: "Node",
+		Kind: "Node",
 	},
 	"host-2": {
 		ObjectMeta: v1.ObjectMeta{
@@ -57,7 +58,7 @@ var nodes = map[string]*inf.Info{
 				nodeZoneLabelName: "us-east-1b",
 			},
 		},
-		Type: "Node",
+		Kind: "Node",
 	},
 }
 
@@ -81,7 +82,9 @@ var rules = api.NetworkTransformRules{
 }
 
 func TestEnrich(t *testing.T) {
-	informers = inf.SetupStubs(info, nodes)
+	ds = &datasource.Datasource{
+		Informers: inf.SetupStubs(info, nodes),
+	}
 
 	// Pod to unknown
 	entry := config.GenericMap{
@@ -182,7 +185,9 @@ var otelRules = api.NetworkTransformRules{
 }
 
 func TestEnrich_Otel(t *testing.T) {
-	informers = inf.SetupStubs(info, nodes)
+	ds = &datasource.Datasource{
+		Informers: inf.SetupStubs(info, nodes),
+	}
 
 	// Pod to unknown
 	entry := config.GenericMap{
@@ -200,7 +205,6 @@ func TestEnrich_Otel(t *testing.T) {
 		"source.k8s.name":           "pod-1",
 		"source.k8s.namespace.name": "ns-1",
 		"source.k8s.pod.name":       "pod-1",
-		"source.k8s.pod.uid":        types.UID(""),
 		"source.k8s.owner.name":     "",
 		"source.k8s.owner.type":     "",
 		"source.k8s.type":           "Pod",
@@ -222,7 +226,6 @@ func TestEnrich_Otel(t *testing.T) {
 		"destination.k8s.name":           "pod-2",
 		"destination.k8s.namespace.name": "ns-2",
 		"destination.k8s.pod.name":       "pod-2",
-		"destination.k8s.pod.uid":        types.UID(""),
 		"destination.k8s.owner.name":     "",
 		"destination.k8s.owner.type":     "",
 		"destination.k8s.type":           "Pod",
@@ -233,7 +236,6 @@ func TestEnrich_Otel(t *testing.T) {
 		"source.k8s.name":                "pod-1",
 		"source.k8s.namespace.name":      "ns-1",
 		"source.k8s.pod.name":            "pod-1",
-		"source.k8s.pod.uid":             types.UID(""),
 		"source.k8s.owner.name":          "",
 		"source.k8s.owner.type":          "",
 		"source.k8s.type":                "Pod",
@@ -253,7 +255,6 @@ func TestEnrich_Otel(t *testing.T) {
 		"destination.k8s.name":           "service-1",
 		"destination.k8s.namespace.name": "ns-1",
 		"destination.k8s.service.name":   "service-1",
-		"destination.k8s.service.uid":    types.UID(""),
 		"destination.k8s.owner.name":     "",
 		"destination.k8s.owner.type":     "",
 		"destination.k8s.type":           "Service",
@@ -263,7 +264,6 @@ func TestEnrich_Otel(t *testing.T) {
 		"source.k8s.name":                "pod-2",
 		"source.k8s.namespace.name":      "ns-2",
 		"source.k8s.pod.name":            "pod-2",
-		"source.k8s.pod.uid":             types.UID(""),
 		"source.k8s.owner.name":          "",
 		"source.k8s.owner.type":          "",
 		"source.k8s.type":                "Pod",
@@ -272,7 +272,9 @@ func TestEnrich_Otel(t *testing.T) {
 }
 
 func TestEnrich_EmptyNamespace(t *testing.T) {
-	informers = inf.SetupStubs(info, nodes)
+	ds = &datasource.Datasource{
+		Informers: inf.SetupStubs(info, nodes),
+	}
 
 	// We need to check that, whether it returns NotFound or just an empty namespace,
 	// there is no map entry for that namespace (an empty-valued map entry is not valid)
@@ -289,14 +291,14 @@ func TestEnrich_EmptyNamespace(t *testing.T) {
 	assert.NotContains(t, entry, "DstK8s_Namespace")
 }
 
-var infoLayers = map[string]*inf.Info{
+var infoLayers = map[string]*model.ResourceMetaData{
 	"1.2.3.4": nil,
 	"10.0.0.1": {
 		ObjectMeta: v1.ObjectMeta{
 			Name:      "prometheus",
 			Namespace: "openshift-monitoring",
 		},
-		Type:     "Pod",
+		Kind:     "Pod",
 		HostName: "host-1",
 		HostIP:   "100.0.0.1",
 	},
@@ -305,7 +307,7 @@ var infoLayers = map[string]*inf.Info{
 			Name:      "pod-2",
 			Namespace: "ns-2",
 		},
-		Type:     "Pod",
+		Kind:     "Pod",
 		HostName: "host-2",
 		HostIP:   "100.0.0.2",
 	},
@@ -314,7 +316,7 @@ var infoLayers = map[string]*inf.Info{
 			Name:      "flowlogs-pipeline-1",
 			Namespace: "netobserv",
 		},
-		Type:     "Pod",
+		Kind:     "Pod",
 		HostName: "host-2",
 		HostIP:   "100.0.0.2",
 	},
@@ -323,25 +325,27 @@ var infoLayers = map[string]*inf.Info{
 			Name:      "kubernetes",
 			Namespace: "default",
 		},
-		Type: "Service",
+		Kind: "Service",
 	},
 	"20.0.0.2": {
 		ObjectMeta: v1.ObjectMeta{
 			Name:      "my-service",
 			Namespace: "my-ns",
 		},
-		Type: "Service",
+		Kind: "Service",
 	},
 	"30.0.0.1": {
 		ObjectMeta: v1.ObjectMeta{
 			Name: "node-x",
 		},
-		Type: "Node",
+		Kind: "Node",
 	},
 }
 
 func TestEnrichLayer(t *testing.T) {
-	informers = inf.SetupStubs(infoLayers, nodes)
+	ds = &datasource.Datasource{
+		Informers: inf.SetupStubs(infoLayers, nodes),
+	}
 
 	rule := api.NetworkTransformRule{
 		KubernetesInfra: &api.K8sInfraRule{

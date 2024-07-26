@@ -267,6 +267,32 @@ Following is the supported API format for network transformations:
                      output: entry output field
                      protocol: entry protocol field
          kubeConfigPath: path to kubeconfig file (optional)
+         kafkaCacheConfig: Kafka config for informers cache (optional)
+             brokers: list of kafka broker addresses
+             topic: kafka topic to listen on
+             groupid: separate groupid for each consumer on specified topic
+             groupBalancers: list of balancing strategies (range, roundRobin, rackAffinity)
+             startOffset: FirstOffset (least recent - default) or LastOffset (most recent) offset available for a partition
+             batchReadTimeout: how often (in milliseconds) to process input
+             decoder: decoder to use (E.g. json or protobuf)
+                 type: (enum) one of the following:
+                    json: JSON decoder
+                    protobuf: Protobuf decoder
+             batchMaxLen: the number of accumulated flows before being forwarded for processing
+             pullQueueCapacity: the capacity of the queue use to store pulled flows
+             pullMaxBytes: the maximum number of bytes being pulled from kafka
+             commitInterval: the interval (in milliseconds) at which offsets are committed to the broker.  If 0, commits will be handled synchronously.
+             tls: TLS client configuration (optional)
+                 insecureSkipVerify: skip client verifying the server's certificate chain and host name
+                 caCertPath: path to the CA certificate
+                 userCertPath: path to the user certificate
+                 userKeyPath: path to the user private key
+             sasl: SASL configuration (optional)
+                 type: SASL type
+                    plain: Plain SASL
+                    scramSHA512: SCRAM/SHA512 SASL
+                 clientIDPath: path to the client ID / SASL username
+                 clientSecretPath: path to the client secret / SASL password
          servicesFile: path to services file (optional, default: /etc/services)
          protocolsFile: path to protocols file (optional, default: /etc/protocols)
          subnetLabels: configure subnet and IPs custom labels

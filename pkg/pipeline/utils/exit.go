@@ -42,8 +42,7 @@ func CloseExitChannel() {
 	close(exitChannel)
 }
 
-func SetupElegantExit() {
-	logrus.Debugf("entering SetupElegantExit")
+func SetupElegantExit() (stopCh <-chan struct{}) {
 	// handle elegant exit; create support for channels of go routines that want to exit cleanly
 	exitChannel = make(chan struct{})
 	exitSigChan := make(chan os.Signal, 1)
@@ -54,7 +53,6 @@ func SetupElegantExit() {
 		sig := <-exitSigChan
 		logrus.Debugf("received exit signal = %v", sig)
 		close(exitChannel)
-		logrus.Debugf("exiting SetupElegantExit go function")
 	}()
-	logrus.Debugf("exiting SetupElegantExit")
+	return exitChannel
 }

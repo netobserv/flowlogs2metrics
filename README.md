@@ -924,7 +924,7 @@ General
   
 Develop  
   lint                  Lint the code  
-  build                 Build flowlogs-pipeline executable and update the docs  
+  build                 Build flowlogs-pipeline executables and update the docs  
   docs                  Update flowlogs-pipeline documentation  
   clean                 Clean  
   tests-unit            Unit tests  

@@ -39,15 +39,17 @@ IMAGE_TAG_BASE ?= quay.io/$(IMAGE_ORG)/flowlogs-pipeline
 
 # Image URL to use all building/pushing image targets
 IMAGE ?= $(IMAGE_TAG_BASE):$(VERSION)
+IMAGE_CACHE ?= $(IMAGE_TAG_BASE)-cache:$(VERSION)
 OCI_BUILD_OPTS ?=
 
 # Image building tool (docker / podman) - docker is preferred in CI
 OCI_BIN_PATH = $(shell which docker 2>/dev/null || which podman)
-OCI_BIN ?= $(shell basename ${OCI_BIN_PATH})
+OCI_BIN ?= $(shell basename ${OCI_BIN_PATH} 2>/dev/null)
 
 MIN_GO_VERSION := 1.20.0
 FLP_BIN_FILE=flowlogs-pipeline
 CG_BIN_FILE=confgenerator
+K8S_CACHE_BIN_FILE=k8s-cache
 NETFLOW_GENERATOR=nflow-generator
 CMD_DIR=./cmd/
 FLP_CONF_FILE ?= contrib/kubernetes/flowlogs-pipeline.conf.yaml
@@ -61,18 +63,21 @@ FORCE: ;
 define build_target
 	echo 'building image for arch $(1)'; \
 	DOCKER_BUILDKIT=1 $(OCI_BIN) buildx build --load --build-arg TARGETPLATFORM=linux/$(1) --build-arg TARGETARCH=$(1) --build-arg BUILDPLATFORM=linux/amd64 ${OCI_BUILD_OPTS} -t ${IMAGE}-$(1) -f contrib/docker/Dockerfile .;
+	DOCKER_BUILDKIT=1 $(OCI_BIN) buildx build --load --build-arg TARGETPLATFORM=linux/$(1) --build-arg TARGETARCH=$(1) --build-arg BUILDPLATFORM=linux/amd64 ${OCI_BUILD_OPTS} -t ${IMAGE_CACHE}-$(1) -f contrib/docker/cache.Dockerfile .;
 endef
 
 # push a single arch target image
 define push_target
 	echo 'pushing image ${IMAGE}-$(1)'; \
 	DOCKER_BUILDKIT=1 $(OCI_BIN) push ${IMAGE}-$(1);
+	DOCKER_BUILDKIT=1 $(OCI_BIN) push ${IMAGE_CACHE}-$(1);
 endef
 
 # manifest create a single arch target provided as argument
 define manifest_add_target
 	echo 'manifest add target $(1)'; \
 	DOCKER_BUILDKIT=1 $(OCI_BIN) manifest add ${IMAGE} ${IMAGE}-$(1);
+	DOCKER_BUILDKIT=1 $(OCI_BIN) manifest add ${IMAGE_CACHE} ${IMAGE_CACHE}-$(1);
 endef
 
 ##@ General
@@ -114,8 +119,12 @@ build_code:
 	GOARCH=${GOARCH} go build -ldflags "-X 'main.BuildVersion=$(BUILD_VERSION)' -X 'main.BuildDate=$(BUILD_DATE)'" "${CMD_DIR}${FLP_BIN_FILE}"
 	GOARCH=${GOARCH} go build -ldflags "-X 'main.BuildVersion=$(BUILD_VERSION)' -X 'main.BuildDate=$(BUILD_DATE)'" "${CMD_DIR}${CG_BIN_FILE}"
 
+.PHONY: build_k8s_cache
+build_k8s_cache:
+	GOARCH=${GOARCH} go build -ldflags "-X 'main.BuildVersion=$(BUILD_VERSION)' -X 'main.BuildDate=$(BUILD_DATE)'" "${CMD_DIR}${K8S_CACHE_BIN_FILE}"
+
 .PHONY: build
-build: validate_go lint build_code docs ## Build flowlogs-pipeline executable and update the docs
+build: validate_go lint build_code build_k8s_cache docs ## Build flowlogs-pipeline executables and update the docs
 
 .PHONY: docs
 docs: FORCE ## Update flowlogs-pipeline documentation
@@ -187,16 +196,20 @@ image-push: ## Push MULTIARCH_TARGETS images
 .PHONY: manifest-build
 manifest-build: ## Build MULTIARCH_TARGETS manifest
 	@echo 'building manifest $(IMAGE)'
-	DOCKER_BUILDKIT=1 $(OCI_BIN) rmi ${IMAGE} -f
+	DOCKER_BUILDKIT=1 $(OCI_BIN) rmi ${IMAGE} -f || true
+	DOCKER_BUILDKIT=1 $(OCI_BIN) rmi ${IMAGE_CACHE} -f || true
 	DOCKER_BUILDKIT=1 $(OCI_BIN) manifest create ${IMAGE} $(foreach target,$(MULTIARCH_TARGETS), --amend ${IMAGE}-$(target));
+	DOCKER_BUILDKIT=1 $(OCI_BIN) manifest create ${IMAGE_CACHE} $(foreach target,$(MULTIARCH_TARGETS), --amend ${IMAGE_CACHE}-$(target));
 
 .PHONY: manifest-push
 manifest-push: ## Push MULTIARCH_TARGETS manifest
 	@echo 'publish manifest $(IMAGE)'
 ifeq (${OCI_BIN}, docker)
 	DOCKER_BUILDKIT=1 $(OCI_BIN) manifest push ${IMAGE};
+	DOCKER_BUILDKIT=1 $(OCI_BIN) manifest push ${IMAGE_CACHE};
 else
 	DOCKER_BUILDKIT=1 $(OCI_BIN) manifest push ${IMAGE} docker://${IMAGE};
+	DOCKER_BUILDKIT=1 $(OCI_BIN) manifest push ${IMAGE_CACHE} docker://${IMAGE_CACHE};
 endif
 
 include .mk/development.mk

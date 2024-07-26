@@ -3,6 +3,8 @@ package informers
 import (
 	"errors"
 
+	"github.com/netobserv/flowlogs-pipeline/pkg/api"
+	"github.com/netobserv/flowlogs-pipeline/pkg/pipeline/transform/kubernetes/model"
 	"github.com/stretchr/testify/mock"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/cache"
@@ -15,18 +17,19 @@ type Mock struct {
 
 func NewInformersMock() *Mock {
 	inf := new(Mock)
-	inf.On("InitFromConfig", mock.Anything).Return(nil)
+	inf.On("InitFromConfig", mock.Anything, mock.Anything).Return(nil)
 	return inf
 }
 
-func (o *Mock) InitFromConfig(kubeConfigPath string) error {
-	args := o.Called(kubeConfigPath)
+func (o *Mock) InitFromConfig(kubeConfigPath string, kafkaConfig *api.EncodeKafka) error {
+	args := o.Called(kubeConfigPath, kafkaConfig)
 	return args.Error(0)
 }
 
 type IndexerMock struct {
 	mock.Mock
 	cache.Indexer
+	parentChecker func(*model.ResourceMetaData)
 }
 
 type InformerMock struct {
@@ -55,45 +58,50 @@ func (m *InformerMock) GetIndexer() cache.Indexer {
 	return args.Get(0).(cache.Indexer)
 }
 
-func (m *IndexerMock) MockPod(ip, name, namespace, nodeIP string, owner *Owner) {
-	var ownerRef []metav1.OwnerReference
-	if owner != nil {
-		ownerRef = []metav1.OwnerReference{{
-			Kind: owner.Type,
-			Name: owner.Name,
-		}}
-	}
-	m.On("ByIndex", IndexIP, ip).Return([]interface{}{&Info{
-		Type: "Pod",
+func (m *IndexerMock) MockPod(ip, name, namespace, nodeIP, ownerName, ownerKind string) {
+	res := model.ResourceMetaData{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:            name,
-			Namespace:       namespace,
-			OwnerReferences: ownerRef,
+			Name:      name,
+			Namespace: namespace,
 		},
-		HostIP: nodeIP,
-	}}, nil)
+		Kind:      "Pod",
+		OwnerName: ownerName,
+		OwnerKind: ownerKind,
+		HostIP:    nodeIP,
+	}
+	m.parentChecker(&res)
+	m.On("ByIndex", IndexIP, ip).Return([]interface{}{&res}, nil)
 }
 
 func (m *IndexerMock) MockNode(ip, name string) {
-	m.On("ByIndex", IndexIP, ip).Return([]interface{}{&Info{
-		Type:       "Node",
-		ObjectMeta: metav1.ObjectMeta{Name: name},
+	m.On("ByIndex", IndexIP, ip).Return([]interface{}{&model.ResourceMetaData{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: name,
+		},
+		Kind:      "Node",
+		OwnerKind: "Node",
+		OwnerName: name,
 	}}, nil)
 }
 
 func (m *IndexerMock) MockService(ip, name, namespace string) {
-	m.On("ByIndex", IndexIP, ip).Return([]interface{}{&Info{
-		Type:       "Service",
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+	m.On("ByIndex", IndexIP, ip).Return([]interface{}{&model.ResourceMetaData{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+		Kind:      "Service",
+		OwnerKind: "Service",
+		OwnerName: name,
 	}}, nil)
 }
 
-func (m *IndexerMock) MockReplicaSet(name, namespace string, owner Owner) {
+func (m *IndexerMock) MockReplicaSet(name, namespace, ownerName, ownerKind string) {
 	m.On("GetByKey", namespace+"/"+name).Return(&metav1.ObjectMeta{
 		Name: name,
 		OwnerReferences: []metav1.OwnerReference{{
-			Kind: owner.Type,
-			Name: owner.Name,
+			Kind: ownerKind,
+			Name: ownerName,
 		}},
 	}, true, nil)
 }
@@ -104,7 +112,7 @@ func (m *IndexerMock) FallbackNotFound() {
 
 func SetupIndexerMocks(kd *Informers) (pods, nodes, svc, rs *IndexerMock) {
 	// pods informer
-	pods = &IndexerMock{}
+	pods = &IndexerMock{parentChecker: kd.checkParent}
 	pim := InformerMock{}
 	pim.On("GetIndexer").Return(pods)
 	kd.pods = &pim
@@ -128,30 +136,27 @@ func SetupIndexerMocks(kd *Informers) (pods, nodes, svc, rs *IndexerMock) {
 
 type FakeInformers struct {
 	InformersInterface
-	info  map[string]*Info
-	nodes map[string]*Info
+	info  map[string]*model.ResourceMetaData
+	nodes map[string]*model.ResourceMetaData
 }
 
-func SetupStubs(info map[string]*Info, nodes map[string]*Info) *FakeInformers {
+func SetupStubs(info map[string]*model.ResourceMetaData, nodes map[string]*model.ResourceMetaData) *FakeInformers {
 	return &FakeInformers{
 		info:  info,
 		nodes: nodes,
 	}
 }
 
-func (f *FakeInformers) InitFromConfig(_ string) error {
+func (f *FakeInformers) InitFromConfig(_ string, _ *api.EncodeKafka) error {
 	return nil
 }
 
-func (f *FakeInformers) GetInfo(n string) (*Info, error) {
+func (f *FakeInformers) GetByIP(n string) *model.ResourceMetaData {
 	i := f.info[n]
-	if i != nil {
-		return i, nil
-	}
-	return nil, errors.New("notFound")
+	return i
 }
 
-func (f *FakeInformers) GetNodeInfo(n string) (*Info, error) {
+func (f *FakeInformers) GetNodeByName(n string) (*model.ResourceMetaData, error) {
 	i := f.nodes[n]
 	if i != nil {
 		return i, nil

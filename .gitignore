@@ -1,4 +1,5 @@
 /flowlogs-pipeline
 /confgenerator
+/k8s-cache
 /bin/
 cover.out

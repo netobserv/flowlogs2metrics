@@ -22,10 +22,13 @@ import (
 	"net"
 	"time"
 
+	"github.com/netobserv/flowlogs-pipeline/pkg/api"
+	"github.com/netobserv/flowlogs-pipeline/pkg/kafka"
 	"github.com/netobserv/flowlogs-pipeline/pkg/pipeline/transform/kubernetes/cni"
+	"github.com/netobserv/flowlogs-pipeline/pkg/pipeline/transform/kubernetes/model"
 	"github.com/netobserv/flowlogs-pipeline/pkg/utils"
-	"github.com/sirupsen/logrus"
 
+	"github.com/sirupsen/logrus"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -40,18 +43,15 @@ const (
 	kubeConfigEnvVariable = "KUBECONFIG"
 	syncTime              = 10 * time.Minute
 	IndexIP               = "byIP"
-	TypeNode              = "Node"
-	TypePod               = "Pod"
-	TypeService           = "Service"
 )
 
 var log = logrus.WithField("component", "transform.Network.Kubernetes")
 
 //nolint:revive
 type InformersInterface interface {
-	GetInfo(string) (*Info, error)
-	GetNodeInfo(string) (*Info, error)
-	InitFromConfig(string) error
+	GetByIP(string) *model.ResourceMetaData
+	GetNodeByName(string) (*model.ResourceMetaData, error)
+	InitFromConfig(string, *api.EncodeKafka) error
 }
 
 type Informers struct {
@@ -66,46 +66,24 @@ type Informers struct {
 	mdStopChan  chan struct{}
 }
 
-type Owner struct {
-	Type string
-	Name string
-}
-
-// Info contains precollected metadata for Pods, Nodes and Services.
-// Not all the fields are populated for all the above types. To save
-// memory, we just keep in memory the necessary data for each Type.
-// For more information about which fields are set for each type, please
-// refer to the instantiation function of the respective informers.
-type Info struct {
-	// Informers need that internal object is an ObjectMeta instance
-	metav1.ObjectMeta
-	Type     string
-	Owner    Owner
-	HostName string
-	HostIP   string
-	ips      []string
-}
-
 var commonIndexers = map[string]cache.IndexFunc{
 	IndexIP: func(obj interface{}) ([]string, error) {
-		return obj.(*Info).ips, nil
+		return obj.(*model.ResourceMetaData).IPs, nil
 	},
 }
 
-func (k *Informers) GetInfo(ip string) (*Info, error) {
+func (k *Informers) GetByIP(ip string) *model.ResourceMetaData {
 	if info, ok := k.fetchInformers(ip); ok {
 		// Owner data might be discovered after the owned, so we fetch it
 		// at the last moment
-		if info.Owner.Name == "" {
-			info.Owner = k.getOwner(info)
-		}
-		return info, nil
+		k.checkParent(info)
+		return info
 	}
 
-	return nil, fmt.Errorf("informers can't find IP %s", ip)
+	return nil
 }
 
-func (k *Informers) fetchInformers(ip string) (*Info, bool) {
+func (k *Informers) fetchInformers(ip string) (*model.ResourceMetaData, bool) {
 	if info, ok := infoForIP(k.pods.GetIndexer(), ip); ok {
 		// it might happen that the Host is discovered after the Pod
 		if info.HostName == "" {
@@ -122,7 +100,7 @@ func (k *Informers) fetchInformers(ip string) (*Info, bool) {
 	return nil, false
 }
 
-func infoForIP(idx cache.Indexer, ip string) (*Info, bool) {
+func infoForIP(idx cache.Indexer, ip string) (*model.ResourceMetaData, bool) {
 	objs, err := idx.ByIndex(IndexIP, ip)
 	if err != nil {
 		log.WithError(err).WithField("ip", ip).Debug("error accessing index. Ignoring")
@@ -131,47 +109,32 @@ func infoForIP(idx cache.Indexer, ip string) (*Info, bool) {
 	if len(objs) == 0 {
 		return nil, false
 	}
-	return objs[0].(*Info), true
+	return objs[0].(*model.ResourceMetaData), true
 }
 
-func (k *Informers) GetNodeInfo(name string) (*Info, error) {
+func (k *Informers) GetNodeByName(name string) (*model.ResourceMetaData, error) {
 	item, ok, err := k.nodes.GetIndexer().GetByKey(name)
 	if err != nil {
 		return nil, err
 	} else if ok {
-		return item.(*Info), nil
+		return item.(*model.ResourceMetaData), nil
 	}
 	return nil, nil
 }
 
-func (k *Informers) getOwner(info *Info) Owner {
-	if len(info.OwnerReferences) != 0 {
-		ownerReference := info.OwnerReferences[0]
-		if ownerReference.Kind != "ReplicaSet" {
-			return Owner{
-				Name: ownerReference.Name,
-				Type: ownerReference.Kind,
-			}
-		}
-
-		item, ok, err := k.replicaSets.GetIndexer().GetByKey(info.Namespace + "/" + ownerReference.Name)
+func (k *Informers) checkParent(info *model.ResourceMetaData) {
+	if info.OwnerKind == "ReplicaSet" {
+		item, ok, err := k.replicaSets.GetIndexer().GetByKey(info.Namespace + "/" + info.OwnerName)
 		if err != nil {
-			log.WithError(err).WithField("key", info.Namespace+"/"+ownerReference.Name).
+			log.WithError(err).WithField("key", info.Namespace+"/"+info.OwnerName).
 				Debug("can't get ReplicaSet info from informer. Ignoring")
 		} else if ok {
 			rsInfo := item.(*metav1.ObjectMeta)
 			if len(rsInfo.OwnerReferences) > 0 {
-				return Owner{
-					Name: rsInfo.OwnerReferences[0].Name,
-					Type: rsInfo.OwnerReferences[0].Kind,
-				}
+				info.OwnerKind = rsInfo.OwnerReferences[0].Kind
+				info.OwnerName = rsInfo.OwnerReferences[0].Name
 			}
 		}
-	}
-	// If no owner references found, return itself as owner
-	return Owner{
-		Name: info.Name,
-		Type: info.Type,
 	}
 }
 
@@ -207,14 +170,16 @@ func (k *Informers) initNodeInformer(informerFactory inf.SharedInformerFactory) 
 		// CNI-dependent logic (must work regardless of whether the CNI is installed)
 		ips = cni.AddOvnIPs(ips, node)
 
-		return &Info{
+		return &model.ResourceMetaData{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      node.Name,
 				Namespace: "",
 				Labels:    node.Labels,
 			},
-			ips:  ips,
-			Type: TypeNode,
+			Kind:      model.KindNode,
+			OwnerName: node.Name,
+			OwnerKind: model.KindNode,
+			IPs:       ips,
 			// We duplicate HostIP and HostName information to simplify later filtering e.g. by
 			// Host IP, where we want to get all the Pod flows by src/dst host, but also the actual
 			// host-to-host flows by the same field.
@@ -223,9 +188,6 @@ func (k *Informers) initNodeInformer(informerFactory inf.SharedInformerFactory) 
 		}, nil
 	}); err != nil {
 		return fmt.Errorf("can't set nodes transform: %w", err)
-	}
-	if err := nodes.AddIndexers(commonIndexers); err != nil {
-		return fmt.Errorf("can't add %s indexer to Nodes informer: %w", IndexIP, err)
 	}
 	k.nodes = nodes
 	return nil
@@ -247,23 +209,28 @@ func (k *Informers) initPodInformer(informerFactory inf.SharedInformerFactory) e
 				ips = append(ips, ip.IP)
 			}
 		}
-		return &Info{
+
+		obj := model.ResourceMetaData{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:            pod.Name,
-				Namespace:       pod.Namespace,
-				Labels:          pod.Labels,
-				OwnerReferences: pod.OwnerReferences,
+				Name:      pod.Name,
+				Namespace: pod.Namespace,
+				Labels:    pod.Labels,
 			},
-			Type:     TypePod,
-			HostIP:   pod.Status.HostIP,
-			HostName: pod.Spec.NodeName,
-			ips:      ips,
-		}, nil
+			Kind:      model.KindPod,
+			OwnerName: pod.Name,
+			OwnerKind: model.KindPod,
+			HostIP:    pod.Status.HostIP,
+			HostName:  pod.Spec.NodeName,
+			IPs:       ips,
+		}
+		if len(pod.OwnerReferences) > 0 {
+			obj.OwnerKind = pod.OwnerReferences[0].Kind
+			obj.OwnerName = pod.OwnerReferences[0].Name
+		}
+		k.checkParent(&obj)
+		return &obj, nil
 	}); err != nil {
 		return fmt.Errorf("can't set pods transform: %w", err)
-	}
-	if err := pods.AddIndexers(commonIndexers); err != nil {
-		return fmt.Errorf("can't add %s indexer to Pods informer: %w", IndexIP, err)
 	}
 
 	k.pods = pods
@@ -286,20 +253,19 @@ func (k *Informers) initServiceInformer(informerFactory inf.SharedInformerFactor
 				ips = append(ips, ip)
 			}
 		}
-		return &Info{
+		return &model.ResourceMetaData{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      svc.Name,
 				Namespace: svc.Namespace,
 				Labels:    svc.Labels,
 			},
-			Type: TypeService,
-			ips:  ips,
+			Kind:      model.KindService,
+			OwnerName: svc.Name,
+			OwnerKind: model.KindService,
+			IPs:       ips,
 		}, nil
 	}); err != nil {
 		return fmt.Errorf("can't set services transform: %w", err)
-	}
-	if err := services.AddIndexers(commonIndexers); err != nil {
-		return fmt.Errorf("can't add %s indexer to Pods informer: %w", IndexIP, err)
 	}
 
 	k.services = services
@@ -331,7 +297,7 @@ func (k *Informers) initReplicaSetInformer(informerFactory metadatainformer.Shar
 	return nil
 }
 
-func (k *Informers) InitFromConfig(kubeConfigPath string) error {
+func (k *Informers) InitFromConfig(kubeConfigPath string, kafkaConfig *api.EncodeKafka) error {
 	// Initialization variables
 	k.stopChan = make(chan struct{})
 	k.mdStopChan = make(chan struct{})
@@ -351,7 +317,7 @@ func (k *Informers) InitFromConfig(kubeConfigPath string) error {
 		return err
 	}
 
-	err = k.initInformers(kubeClient, metaKubeClient)
+	err = k.initInformers(kubeClient, metaKubeClient, kafkaConfig)
 	if err != nil {
 		return err
 	}
@@ -359,7 +325,7 @@ func (k *Informers) InitFromConfig(kubeConfigPath string) error {
 	return nil
 }
 
-func (k *Informers) initInformers(client kubernetes.Interface, metaClient metadata.Interface) error {
+func (k *Informers) initInformers(client kubernetes.Interface, metaClient metadata.Interface, kafkaConfig *api.EncodeKafka) error {
 	informerFactory := inf.NewSharedInformerFactory(client, syncTime)
 	metadataInformerFactory := metadatainformer.NewSharedInformerFactory(metaClient, syncTime)
 	err := k.initNodeInformer(informerFactory)
@@ -379,15 +345,45 @@ func (k *Informers) initInformers(client kubernetes.Interface, metaClient metada
 		return err
 	}
 
-	log.Debugf("starting kubernetes informers, waiting for synchronization")
-	informerFactory.Start(k.stopChan)
-	informerFactory.WaitForCacheSync(k.stopChan)
-	log.Debugf("kubernetes informers started")
+	if kafkaConfig != nil {
+		log.Debugf("adding event handlers for Kafka")
+		kafkaWriter, err := kafka.NewWriter(kafkaConfig)
+		if err != nil {
+			return err
+		}
+		// Informers will publish updates to Kafka
+		for _, inf := range []cache.SharedIndexInformer{k.nodes, k.pods, k.services} {
+			// Note that the update handler is called whenever the resource was updated, even if the update doesn't affect
+			// the transformed data (model.ResourceMetaData). We may want to further optimize this later. On the flip side, this helps
+			// to keep everything in sync in case of missed events.
+			_, err := inf.AddEventHandler(getKafkaEventHandlers(kafkaWriter))
+			if err != nil {
+				return err
+			}
+		}
+	} else {
+		// Informers expose an indexer
+		log.Debugf("adding indexers")
+		if err := k.nodes.AddIndexers(commonIndexers); err != nil {
+			return fmt.Errorf("can't add %s indexer to Nodes informer: %w", IndexIP, err)
+		}
+		if err := k.pods.AddIndexers(commonIndexers); err != nil {
+			return fmt.Errorf("can't add %s indexer to Pods informer: %w", IndexIP, err)
+		}
+		if err := k.services.AddIndexers(commonIndexers); err != nil {
+			return fmt.Errorf("can't add %s indexer to Services informer: %w", IndexIP, err)
+		}
+	}
 
 	log.Debugf("starting kubernetes metadata informers, waiting for synchronization")
 	metadataInformerFactory.Start(k.mdStopChan)
 	metadataInformerFactory.WaitForCacheSync(k.mdStopChan)
 	log.Debugf("kubernetes metadata informers started")
+
+	log.Debugf("starting kubernetes informers, waiting for synchronization")
+	informerFactory.Start(k.stopChan)
+	informerFactory.WaitForCacheSync(k.stopChan)
+	log.Debugf("kubernetes informers started")
 	return nil
 }
 

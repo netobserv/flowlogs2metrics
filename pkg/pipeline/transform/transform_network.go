@@ -202,9 +202,16 @@ func NewTransformNetwork(params config.StageParam) (Transformer, error) {
 	}
 
 	if needToInitKubeData {
-		err := kubernetes.InitFromConfig(jsonNetworkTransform.KubeConfigPath)
-		if err != nil {
-			return nil, err
+		if jsonNetworkTransform.KafkaCacheConfig != nil {
+			// Get kube data from Kafka rather than informers
+			if err := kubernetes.InitKafkaCacheDatasource(jsonNetworkTransform.KafkaCacheConfig); err != nil {
+				return nil, err
+			}
+		} else {
+			// Init informers
+			if err := kubernetes.InitInformerDatasource(jsonNetworkTransform.KubeConfigPath, nil); err != nil {
+				return nil, err
+			}
 		}
 	}
 
