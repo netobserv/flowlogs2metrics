@@ -168,3 +168,6 @@ require (
 )
 
 replace github.com/prometheus/common v0.46.0 => github.com/netobserv/prometheus-common v0.46.0-netobserv
+
+// HACK
+replace github.com/ovn-org/ovn-kubernetes/go-controller v0.0.0-20241126140656-c95491e46334 => github.com/npinaeva/ovn-kubernetes/go-controller v0.0.0-20241219142917-0e539997b136
