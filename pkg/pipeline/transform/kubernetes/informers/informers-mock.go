@@ -175,7 +175,7 @@ func (f *FakeInformers) InitFromConfig(_ api.NetworkTransformKubeConfig, _ *oper
 	return nil
 }
 
-func (f *FakeInformers) GetInfo(keys []cni.SecondaryNetKey, ip string) (*Info, error) {
+func (f *FakeInformers) GetInfo(keys []cni.SecondaryNetKey, ip, _ string) (*Info, error) {
 	if len(keys) > 0 {
 		i := f.customKeysInfo[keys[0].Key]
 		if i != nil {

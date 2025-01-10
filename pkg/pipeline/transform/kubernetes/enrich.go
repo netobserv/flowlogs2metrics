@@ -26,8 +26,9 @@ func Enrich(outputEntry config.GenericMap, rule *api.K8sRule) {
 	if !ok {
 		return
 	}
+	mac, _ := outputEntry.LookupString(rule.MACField)
 	potentialKeys := informers.BuildSecondaryNetworkKeys(outputEntry, rule)
-	kubeInfo, err := informers.GetInfo(potentialKeys, ip)
+	kubeInfo, err := informers.GetInfo(potentialKeys, ip, mac)
 	if err != nil {
 		logrus.WithError(err).Tracef("can't find kubernetes info for keys %v and IP %s", potentialKeys, ip)
 		return

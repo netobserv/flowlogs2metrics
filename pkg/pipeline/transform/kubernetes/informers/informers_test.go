@@ -42,7 +42,7 @@ func TestGetInfo(t *testing.T) {
 	hidx.FallbackNotFound()
 
 	// Test get orphan pod
-	info, err := kubeData.GetInfo(nil, "1.2.3.4")
+	info, err := kubeData.GetInfo(nil, "1.2.3.4", "")
 	require.NoError(t, err)
 	pod1 := Info{
 		Type: "Pod",
@@ -60,13 +60,13 @@ func TestGetInfo(t *testing.T) {
 	require.Equal(t, pod1, *info)
 
 	// Test get same pod by mac
-	info, err = kubeData.GetInfo([]cni.SecondaryNetKey{{NetworkName: "custom-network", Key: "~~AA:BB:CC:DD:EE:FF"}}, "")
+	info, err = kubeData.GetInfo([]cni.SecondaryNetKey{{NetworkName: "custom-network", Key: "~~AA:BB:CC:DD:EE:FF"}}, "", "")
 	require.NoError(t, err)
 	pod1.NetworkName = "custom-network"
 	require.Equal(t, pod1, *info)
 
 	// Test get pod owned
-	info, err = kubeData.GetInfo(nil, "1.2.3.5")
+	info, err = kubeData.GetInfo(nil, "1.2.3.5", "")
 	require.NoError(t, err)
 
 	require.Equal(t, Info{
@@ -88,7 +88,7 @@ func TestGetInfo(t *testing.T) {
 	}, *info)
 
 	// Test get node
-	info, err = kubeData.GetInfo(nil, "10.0.0.1")
+	info, err = kubeData.GetInfo(nil, "10.0.0.1", "")
 	require.NoError(t, err)
 
 	require.Equal(t, Info{
@@ -102,7 +102,7 @@ func TestGetInfo(t *testing.T) {
 	}, *info)
 
 	// Test get service
-	info, err = kubeData.GetInfo(nil, "1.2.3.100")
+	info, err = kubeData.GetInfo(nil, "1.2.3.100", "")
 	require.NoError(t, err)
 
 	require.Equal(t, Info{
@@ -117,7 +117,7 @@ func TestGetInfo(t *testing.T) {
 	}, *info)
 
 	// Test no match
-	info, err = kubeData.GetInfo(nil, "1.2.3.200")
+	info, err = kubeData.GetInfo(nil, "1.2.3.200", "")
 	require.NotNil(t, err)
 	require.Nil(t, info)
 }

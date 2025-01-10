@@ -61,7 +61,7 @@ var (
 //nolint:revive
 type InformersInterface interface {
 	BuildSecondaryNetworkKeys(flow config.GenericMap, rule *api.K8sRule) []cni.SecondaryNetKey
-	GetInfo([]cni.SecondaryNetKey, string) (*Info, error)
+	GetInfo([]cni.SecondaryNetKey, string, string) (*Info, error)
 	GetNodeInfo(string) (*Info, error)
 	InitFromConfig(api.NetworkTransformKubeConfig, *operational.Metrics) error
 }
@@ -100,6 +100,7 @@ type Info struct {
 	HostIP           string
 	NetworkName      string
 	ips              []string
+	macs             map[string]any
 	secondaryNetKeys []string
 }
 
@@ -116,8 +117,8 @@ func (k *Informers) BuildSecondaryNetworkKeys(flow config.GenericMap, rule *api.
 	return multus.BuildKeys(flow, rule, k.secondaryNetworks)
 }
 
-func (k *Informers) GetInfo(potentialKeys []cni.SecondaryNetKey, ip string) (*Info, error) {
-	if info, ok := k.fetchInformers(potentialKeys, ip); ok {
+func (k *Informers) GetInfo(potentialKeys []cni.SecondaryNetKey, ip, mac string) (*Info, error) {
+	if info, ok := k.fetchInformers(potentialKeys, ip, mac); ok {
 		// Owner data might be discovered after the owned, so we fetch it
 		// at the last moment
 		if info.Owner.Name == "" {
@@ -129,8 +130,8 @@ func (k *Informers) GetInfo(potentialKeys []cni.SecondaryNetKey, ip string) (*In
 	return nil, fmt.Errorf("informers can't find IP %s", ip)
 }
 
-func (k *Informers) fetchInformers(potentialKeys []cni.SecondaryNetKey, ip string) (*Info, bool) {
-	if info, ok := k.fetchPodInformer(potentialKeys, ip); ok {
+func (k *Informers) fetchInformers(potentialKeys []cni.SecondaryNetKey, ip, mac string) (*Info, bool) {
+	if info, ok := k.fetchPodInformer(potentialKeys, ip, mac); ok {
 		// it might happen that the Host is discovered after the Pod
 		if info.HostName == "" {
 			info.HostName = k.getHostName(info.HostIP)
@@ -138,23 +139,25 @@ func (k *Informers) fetchInformers(potentialKeys []cni.SecondaryNetKey, ip strin
 		return info, true
 	}
 	// Nodes are only indexed by IP
-	if info, ok := k.infoForIP(k.nodes.GetIndexer(), "Node", ip); ok {
+	if info, ok := k.infoForIP(k.nodes.GetIndexer(), "Node", ip, ""); ok {
 		return info, true
 	}
 	// Services are only indexed by IP
-	if info, ok := k.infoForIP(k.services.GetIndexer(), "Service", ip); ok {
+	if info, ok := k.infoForIP(k.services.GetIndexer(), "Service", ip, ""); ok {
 		return info, true
 	}
 	return nil, false
 }
 
-func (k *Informers) fetchPodInformer(potentialKeys []cni.SecondaryNetKey, ip string) (*Info, bool) {
+func (k *Informers) fetchPodInformer(potentialKeys []cni.SecondaryNetKey, ip, mac string) (*Info, bool) {
 	// 1. Check if the unique key matches any Pod (secondary networks / multus case)
-	if info, ok := k.infoForCustomKeys(k.pods.GetIndexer(), "Pod", potentialKeys); ok {
-		return info, ok
+	if len(potentialKeys) > 0 {
+		if info, ok := k.infoForCustomKeys(k.pods.GetIndexer(), "Pod", potentialKeys); ok {
+			return info, ok
+		}
 	}
 	// 2. Check if the IP matches any Pod (primary network)
-	return k.infoForIP(k.pods.GetIndexer(), "Pod", ip)
+	return k.infoForIP(k.pods.GetIndexer(), "Pod", ip, mac)
 }
 
 func (k *Informers) increaseIndexerHits(kind, namespace, network, warn string) {
@@ -185,7 +188,7 @@ func (k *Informers) infoForCustomKeys(idx cache.Indexer, kind string, potentialK
 	return nil, false
 }
 
-func (k *Informers) infoForIP(idx cache.Indexer, kind string, ip string) (*Info, bool) {
+func (k *Informers) infoForIP(idx cache.Indexer, kind, ip, mac string) (*Info, bool) {
 	objs, err := idx.ByIndex(IndexIP, ip)
 	if err != nil {
 		k.increaseIndexerHits(kind, "", "primary", "informer error")
@@ -193,18 +196,44 @@ func (k *Informers) infoForIP(idx cache.Indexer, kind string, ip string) (*Info,
 		return nil, false
 	}
 	if len(objs) > 0 {
-		info := objs[0].(*Info)
-		info.NetworkName = "primary"
-		if len(objs) > 1 {
-			k.increaseIndexerHits(kind, info.Namespace, "primary", "multiple matches")
-			log.WithField("ip", ip).Debugf("found %d objects matching this IP, returning first", len(objs))
-		} else {
+		if len(objs) == 1 {
+			// Single match, no disambiguation needed
+			info := objs[0].(*Info)
+			info.NetworkName = "primary"
+			log.Tracef("infoForIP found ip %v", info)
 			k.increaseIndexerHits(kind, info.Namespace, "primary", "")
+			return info, true
 		}
-		log.Tracef("infoForIP found ip %v", info)
-		return info, true
+		if mac != "" {
+			// Multiple matches and MAC provided, try disambiguate by MAC
+			log.WithField("ip", ip).Debugf("found %d objects matching this IP, try disambiguate", len(objs))
+			info := k.disambiguateByMAC(objs, mac)
+			if info != nil {
+				log.Tracef("infoForIP disambiguated ip %v", info)
+				k.increaseIndexerHits(kind, info.Namespace, "primary", "disambiguated")
+				info.NetworkName = "primary"
+				return info, true
+			}
+		}
+		log.Debugf("infoForIP could not disambiguate ip %s", ip)
+		k.increaseIndexerHits(kind, "", "primary", "cannot disambiguate")
 	}
 	return nil, false
+}
+
+func (k *Informers) disambiguateByMAC(objs []any, mac string) *Info {
+	var found *Info
+	for _, obj := range objs {
+		info := obj.(*Info)
+		if _, exists := info.macs[mac]; exists {
+			if found != nil {
+				// Multiple matches => cannot disambiguate
+				return nil
+			}
+			found = info
+		}
+	}
+	return found
 }
 
 func (k *Informers) GetNodeInfo(name string) (*Info, error) {
@@ -250,7 +279,7 @@ func (k *Informers) getOwner(info *Info) Owner {
 
 func (k *Informers) getHostName(hostIP string) string {
 	if hostIP != "" {
-		if info, ok := k.infoForIP(k.nodes.GetIndexer(), "Node (indirect)", hostIP); ok {
+		if info, ok := k.infoForIP(k.nodes.GetIndexer(), "Node (indirect)", hostIP, ""); ok {
 			return info.Name
 		}
 	}
@@ -327,11 +356,28 @@ func (k *Informers) initPodInformer(informerFactory inf.SharedInformerFactory) e
 				ips = append(ips, ip.IP)
 			}
 		}
-		// Index from secondary network info
-		keys, err := multus.GetPodUniqueKeys(pod, k.secondaryNetworks)
-		if err != nil {
-			// Log the error as Info, do not block other ips indexing
-			log.WithError(err).Infof("Secondary network cannot be identified")
+		var secondaryNetKeys []string
+		var macs map[string]any
+		if len(k.secondaryNetworks) == 0 {
+			// Overlapping IPs: best effort mode, using MAC addresses to disambiguate
+			macsList, err := multus.ExtractAllMACs(pod)
+			if err != nil {
+				// Log the error as Info, do not block other ips indexing
+				log.WithError(err).Infof("Could not extract MACs from Pod")
+			}
+			macs = make(map[string]any)
+			for _, mac := range macsList {
+				macs[mac] = nil
+			}
+		} else {
+			// Overlapping IPs: use configured indexing key for disambiguation
+			// Index from secondary network info
+			var err error
+			secondaryNetKeys, err = multus.GetPodUniqueKeys(pod, k.secondaryNetworks)
+			if err != nil {
+				// Log the error as Info, do not block other ips indexing
+				log.WithError(err).Infof("Secondary network cannot be identified")
+			}
 		}
 
 		return &Info{
@@ -344,8 +390,9 @@ func (k *Informers) initPodInformer(informerFactory inf.SharedInformerFactory) e
 			Type:             TypePod,
 			HostIP:           pod.Status.HostIP,
 			HostName:         pod.Spec.NodeName,
-			secondaryNetKeys: keys,
+			secondaryNetKeys: secondaryNetKeys,
 			ips:              ips,
+			macs:             macs,
 		}, nil
 	}); err != nil {
 		return fmt.Errorf("can't set pods transform: %w", err)

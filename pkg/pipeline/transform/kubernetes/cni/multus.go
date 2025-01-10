@@ -103,6 +103,23 @@ func (m *MultusHandler) GetPodUniqueKeys(pod *v1.Pod, secNets []api.SecondaryNet
 	return nil, nil
 }
 
+func (m *MultusHandler) ExtractAllMACs(pod *v1.Pod) ([]string, error) {
+	// Cf https://k8snetworkplumbingwg.github.io/multus-cni/docs/quickstart.html#network-status-annotations
+	if statusAnnotationJSON, ok := pod.Annotations[statusAnnotation]; ok {
+		var networks []NetStatItem
+		if err := json.Unmarshal([]byte(statusAnnotationJSON), &networks); err != nil {
+			return nil, fmt.Errorf("failed to extract MACs from network-status annotation, cannot read annotation %s: %w", statusAnnotation, err)
+		}
+		var macs []string
+		for _, network := range networks {
+			macs = append(macs, strings.ToUpper(network.MAC))
+		}
+		return macs, nil
+	}
+	// Annotation not present => just ignore, no error
+	return nil, nil
+}
+
 type NetStatItem struct {
 	Name      string   `json:"name"`
 	Interface string   `json:"interface"`
