@@ -40,7 +40,7 @@ require (
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.34.0
 	go.opentelemetry.io/otel/metric v1.34.0
 	go.opentelemetry.io/otel/sdk v1.34.0
-	go.opentelemetry.io/otel/sdk/metric v1.32.0
+	go.opentelemetry.io/otel/sdk/metric v1.34.0
 	golang.org/x/net v0.34.0
 	google.golang.org/grpc v1.70.0
 	google.golang.org/protobuf v1.36.4
